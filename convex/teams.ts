@@ -350,3 +350,66 @@ export const removeMember = mutation({
     return { success: true };
   },
 });
+
+export const getTeamProfile = query({
+  args: { slug: v.string() },
+  handler: async (ctx, args) => {
+    const team = await ctx.db
+      .query("teams")
+      .withIndex("by_slug", (q: any) => q.eq("slug", args.slug))
+      .first();
+
+    if (!team) {
+      return null;
+    }
+
+    // Get published events for this team
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_team", (q: any) => q.eq("teamId", team._id))
+      .filter((q: any) => q.eq(q.field("status"), "published"))
+      .order("desc")
+      .take(6);
+
+    // Get team members count and some member info
+    const memberships = await ctx.db
+      .query("teamMembers")
+      .withIndex("by_team", (q: any) => q.eq("teamId", team._id))
+      .collect();
+
+    const memberCount = memberships.length;
+
+    // Get some public member info (just names for display)
+    const publicMembers = await Promise.all(
+      memberships.slice(0, 5).map(async (membership) => {
+        const user = await ctx.db.get(membership.userId);
+        return {
+          name: user?.name,
+          role: membership.role,
+          joinedAt: membership.joinedAt,
+        };
+      })
+    );
+
+    // Get event stats
+    const upcomingEvents = events.filter(event => event.startDate > Date.now());
+    const pastEvents = await ctx.db
+      .query("events")
+      .withIndex("by_team", (q: any) => q.eq("teamId", team._id))
+      .filter((q: any) => q.eq(q.field("status"), "published"))
+      .filter((q: any) => q.lt(q.field("startDate"), Date.now()))
+      .collect();
+
+    return {
+      ...team,
+      events,
+      memberCount,
+      publicMembers: publicMembers.filter(member => member.name),
+      stats: {
+        upcomingEvents: upcomingEvents.length,
+        pastEvents: pastEvents.length,
+        totalEvents: events.length + pastEvents.length,
+      },
+    };
+  },
+});
