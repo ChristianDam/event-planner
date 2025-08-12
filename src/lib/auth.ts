@@ -1,9 +1,13 @@
-import { useAuthActions } from "@convex-dev/auth/react";
+import { useAuthActions as useConvexAuthActions } from "@convex-dev/auth/react";
+import { useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
 
-export { useCurrentUser } from "@convex-dev/auth/react";
+export function useCurrentUser() {
+  return useQuery(api.users.current);
+}
 
 export function useAuthActions() {
-  const { signIn, signOut } = useAuthActions();
+  const { signIn, signOut } = useConvexAuthActions();
 
   const signInWithPassword = async (email: string, password: string) => {
     try {

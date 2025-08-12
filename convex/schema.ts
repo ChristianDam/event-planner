@@ -3,19 +3,8 @@ import { authTables } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 
 const schema = defineSchema({
-  // Include Convex Auth tables
+  // Include Convex Auth tables (already includes users table)
   ...authTables,
-
-  users: defineTable({
-    name: v.string(),
-    email: v.string(),
-    bio: v.optional(v.string()),
-    createdAt: v.number(),
-  })
-    .index("by_email", ["email"])
-    .searchIndex("search_name", {
-      searchField: "name",
-    }),
 
   teams: defineTable({
     name: v.string(),

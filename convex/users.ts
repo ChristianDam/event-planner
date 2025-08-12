@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
-import { auth } from "./auth.config";
+import { auth } from "./auth";
 
 export const current = query({
   args: {},
@@ -48,39 +48,5 @@ export const currentWithTeams = query({
       ...user,
       teams,
     };
-  },
-});
-
-export const updateProfile = mutation({
-  args: {
-    name: v.optional(v.string()),
-    bio: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const userId = await auth.getUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-
-    const updateData: any = {};
-    if (args.name !== undefined) {
-      updateData.name = args.name;
-    }
-    if (args.bio !== undefined) {
-      updateData.bio = args.bio;
-    }
-
-    await ctx.db.patch(userId, updateData);
-    return await ctx.db.get(userId);
-  },
-});
-
-export const getByEmail = query({
-  args: { email: v.string() },
-  handler: async (ctx, args) => {
-    return await ctx.db
-      .query("users")
-      .withIndex("by_email", (q) => q.eq("email", args.email))
-      .first();
   },
 });
