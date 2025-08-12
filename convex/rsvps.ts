@@ -1,5 +1,10 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
+import {
+  validateAndSanitizeEmail,
+  validateAndSanitizeName,
+  validateAndSanitizeText,
+} from "./lib/validation";
 
 export const createRSVP = mutation({
   args: {
@@ -24,11 +29,14 @@ export const createRSVP = mutation({
       throw new Error("Cannot RSVP to past events");
     }
 
+    // Validate and sanitize email for duplicate check
+    const sanitizedEmailForCheck = validateAndSanitizeEmail(args.attendeeEmail);
+    
     // Check for duplicate RSVP
     const existingRSVP = await ctx.db
       .query("rsvps")
       .withIndex("by_event_email", (q: any) => 
-        q.eq("eventId", args.eventId).eq("attendeeEmail", args.attendeeEmail.toLowerCase())
+        q.eq("eventId", args.eventId).eq("attendeeEmail", sanitizedEmailForCheck)
       )
       .first();
 
@@ -36,32 +44,49 @@ export const createRSVP = mutation({
       throw new Error("You have already RSVPed to this event");
     }
 
-    // Check capacity and determine status
+    // Validate and sanitize inputs
+    const sanitizedName = validateAndSanitizeName(args.attendeeName, "Attendee name");
+    const sanitizedEmail = validateAndSanitizeEmail(args.attendeeEmail);
+    const sanitizedMessage = validateAndSanitizeText(args.message, "Message", 500);
+
+    // Use optimistic insertion to prevent race conditions
+    // First, insert with confirmed status
     let status: "confirmed" | "waitlist" = "confirmed";
     
+    const rsvpId = await ctx.db.insert("rsvps", {
+      eventId: args.eventId,
+      attendeeName: sanitizedName,
+      attendeeEmail: sanitizedEmail,
+      message: sanitizedMessage,
+      status: "confirmed", // Initially confirmed
+      createdAt: Date.now(),
+    });
+
+    // Now check if we exceeded capacity and demote to waitlist if needed
     if (event.capacity) {
-      const confirmedCount = await ctx.db
+      const allConfirmedRSVPs = await ctx.db
         .query("rsvps")
         .withIndex("by_event_status", (q: any) => 
           q.eq("eventId", args.eventId).eq("status", "confirmed")
         )
-        .collect()
-        .then(rsvps => rsvps.length);
+        .order("asc") // Order by creation time to maintain fairness
+        .collect();
 
-      if (confirmedCount >= event.capacity) {
-        status = "waitlist";
+      if (allConfirmedRSVPs.length > event.capacity) {
+        // Find RSVPs that exceed capacity (latest ones)
+        const excessRSVPs = allConfirmedRSVPs.slice(event.capacity);
+        
+        // Check if our new RSVP is among the excess ones
+        const isOurRSVPExcess = excessRSVPs.find(r => r._id === rsvpId);
+        
+        if (isOurRSVPExcess) {
+          // Demote our RSVP to waitlist
+          await ctx.db.patch(rsvpId, { status: "waitlist" });
+          status = "waitlist";
+        }
       }
     }
 
-    // Create RSVP
-    const rsvpId = await ctx.db.insert("rsvps", {
-      eventId: args.eventId,
-      attendeeName: args.attendeeName.trim(),
-      attendeeEmail: args.attendeeEmail.toLowerCase().trim(),
-      message: args.message?.trim(),
-      status,
-      createdAt: Date.now(),
-    });
 
     return {
       rsvpId,
@@ -127,10 +152,13 @@ export const cancelRSVP = mutation({
     attendeeEmail: v.string(),
   },
   handler: async (ctx, args) => {
+    // Validate and sanitize email
+    const sanitizedEmail = validateAndSanitizeEmail(args.attendeeEmail);
+    
     const rsvp = await ctx.db
       .query("rsvps")
       .withIndex("by_event_email", (q: any) => 
-        q.eq("eventId", args.eventId).eq("attendeeEmail", args.attendeeEmail.toLowerCase())
+        q.eq("eventId", args.eventId).eq("attendeeEmail", sanitizedEmail)
       )
       .first();
 
@@ -183,10 +211,13 @@ export const updateRSVP = mutation({
     message: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    // Validate and sanitize email
+    const sanitizedEmail = validateAndSanitizeEmail(args.attendeeEmail);
+    
     const rsvp = await ctx.db
       .query("rsvps")
       .withIndex("by_event_email", (q: any) => 
-        q.eq("eventId", args.eventId).eq("attendeeEmail", args.attendeeEmail.toLowerCase())
+        q.eq("eventId", args.eventId).eq("attendeeEmail", sanitizedEmail)
       )
       .first();
 
@@ -206,10 +237,10 @@ export const updateRSVP = mutation({
 
     const updates: any = {};
     if (args.attendeeName !== undefined) {
-      updates.attendeeName = args.attendeeName.trim();
+      updates.attendeeName = validateAndSanitizeName(args.attendeeName, "Attendee name");
     }
     if (args.message !== undefined) {
-      updates.message = args.message?.trim();
+      updates.message = validateAndSanitizeText(args.message, "Message", 500);
     }
 
     await ctx.db.patch(rsvp._id, updates);
@@ -223,10 +254,13 @@ export const checkRSVPStatus = query({
     attendeeEmail: v.string(),
   },
   handler: async (ctx, args) => {
+    // Validate and sanitize email
+    const sanitizedEmail = validateAndSanitizeEmail(args.attendeeEmail);
+    
     const rsvp = await ctx.db
       .query("rsvps")
       .withIndex("by_event_email", (q: any) => 
-        q.eq("eventId", args.eventId).eq("attendeeEmail", args.attendeeEmail.toLowerCase())
+        q.eq("eventId", args.eventId).eq("attendeeEmail", sanitizedEmail)
       )
       .first();
 

@@ -18,6 +18,7 @@ import type * as discovery from "../discovery.js";
 import type * as events from "../events.js";
 import type * as http from "../http.js";
 import type * as invites from "../invites.js";
+import type * as lib_validation from "../lib/validation.js";
 import type * as rsvps from "../rsvps.js";
 import type * as teams from "../teams.js";
 import type * as users from "../users.js";
@@ -36,6 +37,7 @@ declare const fullApi: ApiFromModules<{
   events: typeof events;
   http: typeof http;
   invites: typeof invites;
+  "lib/validation": typeof lib_validation;
   rsvps: typeof rsvps;
   teams: typeof teams;
   users: typeof users;

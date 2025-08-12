@@ -1,13 +1,14 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 import { auth } from "./auth";
+import {
+  validateAndSanitizeName,
+  validateAndSanitizeText,
+  validateAndSanitizeAddress,
+  validateCapacity,
+  generateSlug,
+} from "./lib/validation";
 
-function generateSlug(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
-}
 
 async function getUserPermission(ctx: any, teamId: any, userId: any) {
   const membership = await ctx.db
@@ -173,6 +174,13 @@ export const create = mutation({
       throw new Error("Not a member of this team");
     }
 
+    // Validate and sanitize inputs
+    const sanitizedTitle = validateAndSanitizeName(args.title, "Event title");
+    const sanitizedDescription = validateAndSanitizeText(args.description, "Event description", 2000)!;
+    const sanitizedVenue = args.location.venue ? validateAndSanitizeName(args.location.venue, "Venue name") : undefined;
+    const sanitizedAddress = validateAndSanitizeAddress(args.location.address);
+    const validatedCapacity = validateCapacity(args.capacity);
+
     // Validate dates
     if (args.endDate <= args.startDate) {
       throw new Error("End date must be after start date");
@@ -182,17 +190,26 @@ export const create = mutation({
       throw new Error("Event cannot start in the past");
     }
 
-    // Generate unique slug
-    const baseSlug = generateSlug(args.title);
+    // Generate unique slug with collision handling
+    const baseSlug = generateSlug(sanitizedTitle);
     let slug = baseSlug;
     let counter = 1;
+    const maxRetries = 100;
     
-    while (await ctx.db
-      .query("events")
-      .withIndex("by_team_slug", (q: any) => q.eq("teamId", args.teamId).eq("slug", slug))
-      .first()) {
+    while (counter <= maxRetries) {
+      const existingEvent = await ctx.db
+        .query("events")
+        .withIndex("by_team_slug", (q: any) => q.eq("teamId", args.teamId).eq("slug", slug))
+        .first();
+      if (!existingEvent) {
+        break;
+      }
       slug = `${baseSlug}-${counter}`;
       counter++;
+    }
+    
+    if (counter > maxRetries) {
+      throw new Error("Unable to generate unique slug. Please try a different event title.");
     }
 
     const now = Date.now();
@@ -200,12 +217,16 @@ export const create = mutation({
     const eventId = await ctx.db.insert("events", {
       teamId: args.teamId,
       createdBy: userId,
-      title: args.title,
-      description: args.description,
+      title: sanitizedTitle,
+      description: sanitizedDescription,
       startDate: args.startDate,
       endDate: args.endDate,
-      location: args.location,
-      capacity: args.capacity,
+      location: {
+        address: sanitizedAddress,
+        venue: sanitizedVenue,
+        coordinates: args.location.coordinates,
+      },
+      capacity: validatedCapacity,
       slug,
       status: args.status,
       createdAt: now,
@@ -268,15 +289,17 @@ export const update = mutation({
     }
 
     if (args.title !== undefined) {
-      updates.title = args.title;
+      const sanitizedTitle = validateAndSanitizeName(args.title, "Event title");
+      updates.title = sanitizedTitle;
       
       // Update slug if title changed
-      if (args.title !== event.title) {
-        const baseSlug = generateSlug(args.title);
+      if (sanitizedTitle !== event.title) {
+        const baseSlug = generateSlug(sanitizedTitle);
         let slug = baseSlug;
         let counter = 1;
+        const maxRetries = 100;
         
-        while (true) {
+        while (counter <= maxRetries) {
           const existingEvent = await ctx.db
             .query("events")
             .withIndex("by_team_slug", (q: any) => q.eq("teamId", event.teamId).eq("slug", slug))
@@ -290,15 +313,29 @@ export const update = mutation({
           counter++;
         }
         
+        if (counter > maxRetries) {
+          throw new Error("Unable to generate unique slug. Please try a different event title.");
+        }
+        
         updates.slug = slug;
       }
     }
 
-    if (args.description !== undefined) updates.description = args.description;
+    if (args.description !== undefined) {
+      updates.description = validateAndSanitizeText(args.description, "Event description", 2000)!;
+    }
     if (args.startDate !== undefined) updates.startDate = args.startDate;
     if (args.endDate !== undefined) updates.endDate = args.endDate;
-    if (args.location !== undefined) updates.location = args.location;
-    if (args.capacity !== undefined) updates.capacity = args.capacity;
+    if (args.location !== undefined) {
+      updates.location = {
+        address: validateAndSanitizeAddress(args.location.address),
+        venue: args.location.venue ? validateAndSanitizeName(args.location.venue, "Venue name") : undefined,
+        coordinates: args.location.coordinates,
+      };
+    }
+    if (args.capacity !== undefined) {
+      updates.capacity = validateCapacity(args.capacity);
+    }
     if (args.status !== undefined) updates.status = args.status;
 
     await ctx.db.patch(args.eventId, updates);

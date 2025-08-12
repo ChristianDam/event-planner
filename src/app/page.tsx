@@ -4,10 +4,12 @@ import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import Link from "next/link";
+import { useErrorHandler } from "@/hooks/useErrorHandler";
 
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCity, setSelectedCity] = useState("");
+  const { handleError } = useErrorHandler();
 
   const events = useQuery(api.discovery.getPublicEvents, {
     limit: 12,
@@ -17,6 +19,17 @@ export default function Home() {
 
   const featuredTeams = useQuery(api.discovery.getFeaturedTeams, { limit: 6 });
   const stats = useQuery(api.discovery.getEventStats, {});
+
+  // Handle query errors
+  if (events === undefined || featuredTeams === undefined || stats === undefined) {
+    // Loading state - this is normal
+  } else if (events instanceof Error) {
+    handleError(events, "loading events");
+  } else if (featuredTeams instanceof Error) {
+    handleError(featuredTeams, "loading featured teams");
+  } else if (stats instanceof Error) {
+    handleError(stats, "loading stats");
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
