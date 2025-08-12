@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 import { auth } from "./auth";
+import { validateAndSanitizeEmail } from "./lib/validation";
 
 function generateInviteCode(): string {
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
@@ -38,6 +39,9 @@ export const createInvite = mutation({
       throw new Error("Insufficient permissions to send invites");
     }
 
+    // Validate and sanitize email
+    const sanitizedEmail = validateAndSanitizeEmail(args.email);
+
     // Check if team exists
     const team = await ctx.db.get(args.teamId);
     if (!team) {
@@ -52,7 +56,7 @@ export const createInvite = mutation({
     const existingInvite = await ctx.db
       .query("teamInvites")
       .withIndex("by_team", (q: any) => q.eq("teamId", args.teamId))
-      .filter((q: any) => q.eq(q.field("email"), args.email))
+      .filter((q: any) => q.eq(q.field("email"), sanitizedEmail))
       .first();
 
     if (existingInvite && existingInvite.expiresAt > Date.now()) {
@@ -64,16 +68,28 @@ export const createInvite = mutation({
       await ctx.db.delete(existingInvite._id);
     }
 
-    // Generate unique invite code
+    // Generate unique invite code with collision handling
     let inviteCode = generateInviteCode();
-    while (await ctx.db.query("teamInvites").withIndex("by_code", (q: any) => q.eq("inviteCode", inviteCode)).first()) {
+    let attempts = 0;
+    const maxAttempts = 50;
+    
+    while (attempts < maxAttempts) {
+      const existingCode = await ctx.db.query("teamInvites").withIndex("by_code", (q: any) => q.eq("inviteCode", inviteCode)).first();
+      if (!existingCode) {
+        break;
+      }
       inviteCode = generateInviteCode();
+      attempts++;
+    }
+    
+    if (attempts >= maxAttempts) {
+      throw new Error("Unable to generate unique invite code. Please try again.");
     }
 
     // Create invite (expires in 7 days)
     const inviteId = await ctx.db.insert("teamInvites", {
       teamId: args.teamId,
-      email: args.email,
+      email: sanitizedEmail,
       role: args.role,
       inviteCode,
       invitedBy: userId,

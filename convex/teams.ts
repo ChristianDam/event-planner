@@ -1,13 +1,13 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 import { auth } from "./auth";
+import {
+  validateAndSanitizeName,
+  validateAndSanitizeText,
+  validateAndSanitizeSlug,
+  generateSlug,
+} from "./lib/validation";
 
-function generateSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
-}
 
 async function getUserPermission(ctx: any, teamId: any, userId: any) {
   const membership = await ctx.db
@@ -89,22 +89,36 @@ export const create = mutation({
       throw new Error("Not authenticated");
     }
 
-    // Generate unique slug
-    const baseSlug = generateSlug(args.name);
+    // Validate and sanitize inputs
+    const sanitizedName = validateAndSanitizeName(args.name, "Team name");
+    const sanitizedDescription = validateAndSanitizeText(args.description, "Team description", 500);
+
+    // Generate unique slug with collision handling
+    const baseSlug = generateSlug(sanitizedName);
     let slug = baseSlug;
     let counter = 1;
     
-    while (await ctx.db.query("teams").withIndex("by_slug", (q: any) => q.eq("slug", slug)).first()) {
+    // Proper slug collision handling with retry limit
+    const maxRetries = 100;
+    while (counter <= maxRetries) {
+      const existingTeam = await ctx.db.query("teams").withIndex("by_slug", (q: any) => q.eq("slug", slug)).first();
+      if (!existingTeam) {
+        break;
+      }
       slug = `${baseSlug}-${counter}`;
       counter++;
+    }
+    
+    if (counter > maxRetries) {
+      throw new Error("Unable to generate unique slug. Please try a different team name.");
     }
 
     const now = Date.now();
     
     // Create team
     const teamId = await ctx.db.insert("teams", {
-      name: args.name,
-      description: args.description,
+      name: sanitizedName,
+      description: sanitizedDescription,
       slug,
       createdAt: now,
       updatedAt: now,
@@ -147,15 +161,17 @@ export const update = mutation({
     const updates: any = { updatedAt: Date.now() };
     
     if (args.name !== undefined) {
-      updates.name = args.name;
+      const sanitizedName = validateAndSanitizeName(args.name, "Team name");
+      updates.name = sanitizedName;
       
       // Update slug if name changed
-      if (args.name !== team.name) {
-        const baseSlug = generateSlug(args.name);
+      if (sanitizedName !== team.name) {
+        const baseSlug = generateSlug(sanitizedName);
         let slug = baseSlug;
         let counter = 1;
+        const maxRetries = 100;
         
-        while (true) {
+        while (counter <= maxRetries) {
           const existingTeam = await ctx.db
             .query("teams")
             .withIndex("by_slug", (q: any) => q.eq("slug", slug))
@@ -169,12 +185,17 @@ export const update = mutation({
           counter++;
         }
         
+        if (counter > maxRetries) {
+          throw new Error("Unable to generate unique slug. Please try a different team name.");
+        }
+        
         updates.slug = slug;
       }
     }
     
     if (args.description !== undefined) {
-      updates.description = args.description;
+      const sanitizedDescription = validateAndSanitizeText(args.description, "Team description", 500);
+      updates.description = sanitizedDescription;
     }
 
     await ctx.db.patch(args.teamId, updates);
@@ -348,5 +369,68 @@ export const removeMember = mutation({
 
     await ctx.db.delete(membership._id);
     return { success: true };
+  },
+});
+
+export const getTeamProfile = query({
+  args: { slug: v.string() },
+  handler: async (ctx, args) => {
+    const team = await ctx.db
+      .query("teams")
+      .withIndex("by_slug", (q: any) => q.eq("slug", args.slug))
+      .first();
+
+    if (!team) {
+      return null;
+    }
+
+    // Get published events for this team
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_team", (q: any) => q.eq("teamId", team._id))
+      .filter((q: any) => q.eq(q.field("status"), "published"))
+      .order("desc")
+      .take(6);
+
+    // Get team members count and some member info
+    const memberships = await ctx.db
+      .query("teamMembers")
+      .withIndex("by_team", (q: any) => q.eq("teamId", team._id))
+      .collect();
+
+    const memberCount = memberships.length;
+
+    // Get some public member info (just names for display)
+    const publicMembers = await Promise.all(
+      memberships.slice(0, 5).map(async (membership) => {
+        const user = await ctx.db.get(membership.userId);
+        return {
+          name: user?.name,
+          role: membership.role,
+          joinedAt: membership.joinedAt,
+        };
+      })
+    );
+
+    // Get event stats
+    const upcomingEvents = events.filter(event => event.startDate > Date.now());
+    const pastEvents = await ctx.db
+      .query("events")
+      .withIndex("by_team", (q: any) => q.eq("teamId", team._id))
+      .filter((q: any) => q.eq(q.field("status"), "published"))
+      .filter((q: any) => q.lt(q.field("startDate"), Date.now()))
+      .collect();
+
+    return {
+      ...team,
+      events,
+      memberCount,
+      publicMembers: publicMembers.filter(member => member.name),
+      stats: {
+        upcomingEvents: upcomingEvents.length,
+        pastEvents: pastEvents.length,
+        totalEvents: events.length + pastEvents.length,
+      },
+    };
   },
 });
